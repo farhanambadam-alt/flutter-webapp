@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:app_links/app_links.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,25 +42,82 @@ class WebViewScreen extends StatefulWidget {
 
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver {
   InAppWebViewController? _controller;
-  // !! REPLACE WITH YOUR DEPLOYED URL !!
-  static const String _webAppUrl = 'https://hello-blank-react.lovable.app';
+  static const String _rootRoute = "/";
+  static const String _webAppUrl = 'https://bare-react-bliss.lovable.app';
+  
+  late final AppLinks _appLinks;
+  StreamSubscription<Uri>? _linkSubscription;
+  
+  bool _isPageLoaded = false;
+  bool _historyCleared = false;
+  String? _pendingPath;
+  String _currentRoute = _rootRoute;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _initDeepLinks();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _linkSubscription?.cancel();
     super.dispose();
+  }
+
+  Future<void> _initDeepLinks() async {
+    _appLinks = AppLinks();
+
+    // Check initial link if app was closed
+    final initialUri = await _appLinks.getInitialLink();
+    if (initialUri != null) {
+      _handleDeepLink(initialUri);
+    }
+
+    // Listen for incoming links while app is running
+    _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
+      _handleDeepLink(uri);
+    });
+  }
+
+  void _handleDeepLink(Uri uri) {
+    // Extract path from chicsalon://app/<path> or https://yourdomain.com/<path>
+    String path = uri.path;
+    if (path.isEmpty) path = "/";
+    if (!path.startsWith("/")) path = "/$path";
+
+    debugPrint("Incoming deep link: $uri -> parsed path: $path");
+
+    if (_isPageLoaded) {
+      navigateTo(path);
+    } else {
+      _pendingPath = path;
+    }
+  }
+
+  Future<void> navigateTo(String path) async {
+    if (_controller == null || !mounted) return;
+    
+    // Guard: Prevent duplicate navigation to the same route
+    if (_currentRoute == path) return;
+
+    debugPrint("Navigating React to: $path");
+    try {
+      await _controller?.evaluateJavascript(
+        source: "if (window.navigateTo) { window.navigateTo('$path'); }"
+      );
+      // Update route locally to prevent race conditions/double navigation
+      _currentRoute = path;
+    } catch (e) {
+      debugPrint("Navigation bridge error: $e");
+    }
   }
 
   @override
   void didChangeMetrics() {
     super.didChangeMetrics();
-    // Re-inject on orientation/metrics change
     _injectSafeArea();
   }
 
@@ -66,7 +125,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
-      // Re-inject on resume
       _injectSafeArea();
     }
   }
@@ -74,7 +132,6 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   void _injectSafeArea() {
     if (_controller == null || !mounted) return;
     
-    // Use View to safely get padding outside of the build phase
     final view = View.of(context);
     final padding = MediaQueryData.fromView(view).padding;
     
@@ -91,49 +148,105 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      // CRITICAL: Prevent layout jump when keyboard opens
-      resizeToAvoidBottomInset: false,
-      backgroundColor: Colors.black, // Prevents white flash
-      body: InAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri(_webAppUrl)),
-        initialSettings: InAppWebViewSettings( // Replaces generic options
-          javaScriptEnabled: true,
-          domStorageEnabled: true,
-          overScrollMode: OverScrollMode.NEVER, // Disable overscroll glow
-          verticalScrollBarEnabled: false,      // Disable native scrollbars
-          horizontalScrollBarEnabled: false,
-          useHybridComposition: true,           // Enable hybrid composition globally
-          transparentBackground: true,
-        ),
-        onWebViewCreated: (controller) {
-          _controller = controller;
-        },
-        onLoadStop: (controller, url) {
-           // Inject explicit safe-areas right after page load
-           _injectSafeArea();
-           
-           // Inject CSS cleanup specifically for Chromium scrollbars
-           controller.evaluateJavascript(source: '''
-              var style = document.createElement('style');
-              style.innerHTML = `
-                ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
-                * { scrollbar-width: none !important; -webkit-tap-highlight-color: transparent !important; }
-              `;
-              document.head.appendChild(style);
-           ''');
-        },
-        onUpdateVisitedHistory: (controller, url, androidIsReload) {
-            // Equivalent hook for catching DOM readies when load completes/commits
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        
+        final controller = _controller;
+        if (controller == null) return;
+
+        // Root check: If at / or empty, exit the app
+        if (_currentRoute == _rootRoute || _currentRoute.isEmpty) {
+          SystemNavigator.pop();
+          return;
+        }
+
+        // Native behavior: Delegate back navigation ONLY to React via JS bridge
+        try {
+          await controller.evaluateJavascript(source: """
+            if (window.appBack) {
+              window.appBack();
+            }
+          """);
+        } catch (e) {
+          debugPrint("Back bridge error: $e");
+        }
+      },
+      child: Scaffold(
+        resizeToAvoidBottomInset: false,
+        backgroundColor: Colors.black,
+        body: InAppWebView(
+          initialUrlRequest: URLRequest(url: WebUri(_webAppUrl)),
+          initialSettings: InAppWebViewSettings(
+            javaScriptEnabled: true,
+            domStorageEnabled: true,
+            useHybridComposition: true,
+            // Disable hardware acceleration to prevent renderer crashes on certain devices (e.g. Vivo)
+            hardwareAcceleration: false,
+            overScrollMode: OverScrollMode.NEVER,
+            verticalScrollBarEnabled: false,
+            horizontalScrollBarEnabled: false,
+            transparentBackground: true,
+          ),
+          onWebViewCreated: (controller) {
+            _controller = controller;
+            
+            // Register JS Handler for route synchronization
+            controller.addJavaScriptHandler(
+              handlerName: 'routeChanged',
+              callback: (args) {
+                if (args.isNotEmpty) {
+                  setState(() {
+                    _currentRoute = args.first.toString();
+                  });
+                  debugPrint("React route changed: $_currentRoute");
+                }
+              },
+            );
+          },
+          onLoadStart: (controller, url) {
+            _isPageLoaded = false;
+          },
+          onLoadStop: (controller, url) async {
+             _isPageLoaded = true;
+             _injectSafeArea();
+             
+             // HARD RESET: Completely clear WebView history to prevent browser-like behavior
+             await controller.clearHistory();
+
+             // Sync initial route to Flutter immediately after load
+             await controller.evaluateJavascript(source: """
+               window.flutter_inappwebview.callHandler(
+                 'routeChanged',
+                 window.location.pathname
+               );
+             """);
+
+             // If there was a pending deep link path, navigate now
+             if (_pendingPath != null) {
+               await navigateTo(_pendingPath!);
+               _pendingPath = null;
+             }
+             
+             await controller.evaluateJavascript(source: '''
+                var style = document.createElement('style');
+                style.innerHTML = `
+                  ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+                  * { scrollbar-width: none !important; -webkit-tap-highlight-color: transparent !important; }
+                `;
+                document.head.appendChild(style);
+             ''');
+          },
+          onUpdateVisitedHistory: (controller, url, androidIsReload) {
+              _injectSafeArea();
+          },
+          onRenderProcessGone: (controller, detail) async {
+            _isPageLoaded = false;
+            await controller.reload();
             _injectSafeArea();
-        },
-        onRenderProcessGone: (controller, detail) async {
-          // CRITICAL: Recover from WebView crashes automatically
-          await controller.reload();
-          
-          // re-inject safe area AFTER reload
-          _injectSafeArea();
-        },
+          },
+        ),
       ),
     );
   }

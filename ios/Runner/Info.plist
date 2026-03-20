@@ -47,5 +47,18 @@
 	<true/>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>chicsalon</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>chicsalon</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
