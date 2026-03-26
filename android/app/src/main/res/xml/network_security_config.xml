@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network Security Config — Android API 24+
+  - Only HTTPS is trusted for our app domain (no cleartext traffic)
+  - System CAs are trusted (no self-signed cert issues)
+  - Cleartext is explicitly blocked to prevent accidental HTTP downgrades
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">lovable.app</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
