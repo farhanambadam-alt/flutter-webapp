@@ -51,12 +51,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   StreamSubscription<Uri>? _linkSubscription;
   
   bool _isPageLoaded = false;
-  bool _historyCleared = false;
   bool _showLoading = true;
   bool _hasError = false;
   bool _isOffline = false;
   bool _isRetryPressed = false;
-  String _errorDescription = '';
+  static const Duration _pageLoadTimeout = Duration(seconds: 12);
+  bool _didPageLoadTimeout = false;
+  Timer? _pageLoadTimeoutTimer;
   String? _pendingPath;
   String _currentRoute = _rootRoute;
 
@@ -120,23 +121,52 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     WidgetsBinding.instance.removeObserver(this);
     _linkSubscription?.cancel();
     _connectivitySubscription?.cancel();
+    _cancelPageLoadTimeout();
     _loadingAnimController.dispose();
     super.dispose();
   }
 
-  Future<void> _initDeepLinks() async {
-    _appLinks = AppLinks();
+  void _cancelPageLoadTimeout() {
+    _pageLoadTimeoutTimer?.cancel();
+    _pageLoadTimeoutTimer = null;
+  }
 
-    // Check initial link if app was closed
-    final initialUri = await _appLinks.getInitialLink();
-    if (initialUri != null) {
-      _handleDeepLink(initialUri);
-    }
-
-    // Listen for incoming links while app is running
-    _linkSubscription = _appLinks.uriLinkStream.listen((uri) {
-      _handleDeepLink(uri);
+  void _startPageLoadTimeout() {
+    _cancelPageLoadTimeout();
+    _didPageLoadTimeout = false;
+    _pageLoadTimeoutTimer = Timer(_pageLoadTimeout, () {
+      if (!mounted) return;
+      debugPrint("Page load timed out; showing connection error overlay");
+      setState(() {
+        _hasError = true;
+        _showLoading = false;
+        _didPageLoadTimeout = true;
+      });
     });
+  }
+
+  Future<void> _initDeepLinks() async {
+    try {
+      _appLinks = AppLinks();
+
+      // Check initial link if app was closed
+      final initialUri = await _appLinks.getInitialLink();
+      if (initialUri != null) {
+        _handleDeepLink(initialUri);
+      }
+
+      // Listen for incoming links while app is running
+      _linkSubscription = _appLinks.uriLinkStream.listen(
+        (uri) {
+          _handleDeepLink(uri);
+        },
+        onError: (Object e, StackTrace s) {
+          debugPrint("Deep link stream error: $e\n$s");
+        },
+      );
+    } catch (e, stack) {
+      debugPrint("Deep link init failed: $e\n$stack");
+    }
   }
 
   void _handleDeepLink(Uri uri) {
@@ -192,15 +222,24 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     final view = View.of(context);
     final padding = MediaQueryData.fromView(view).padding;
     
-    _controller?.evaluateJavascript(source: '''
-      try {
-        document.documentElement.style.setProperty('--flutter-top', '${padding.top}px');
-        document.documentElement.style.setProperty('--flutter-bottom', '${padding.bottom}px');
-        document.documentElement.style.setProperty('--flutter-left', '${padding.left}px');
-        document.documentElement.style.setProperty('--flutter-right', '${padding.right}px');
-        document.documentElement.classList.add('safe-ready');
-      } catch(e) {}
-    ''');
+    try {
+      // Don't let JS evaluation Future exceptions become unhandled.
+      _controller
+          ?.evaluateJavascript(source: '''
+        try {
+          document.documentElement.style.setProperty('--flutter-top', '${padding.top}px');
+          document.documentElement.style.setProperty('--flutter-bottom', '${padding.bottom}px');
+          document.documentElement.style.setProperty('--flutter-left', '${padding.left}px');
+          document.documentElement.style.setProperty('--flutter-right', '${padding.right}px');
+          document.documentElement.classList.add('safe-ready');
+        } catch(e) {}
+      ''')
+          .catchError((Object e, StackTrace s) {
+        debugPrint("Safe-area JS inject failed: $e\n$s");
+      });
+    } catch (e, stack) {
+      debugPrint("Safe-area injection threw: $e\n$stack");
+    }
   }
 
   @override
@@ -259,67 +298,112 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             _controller = controller;
             
             // Register JS Handler for route synchronization
-            controller.addJavaScriptHandler(
-              handlerName: 'routeChanged',
-              callback: (args) {
-                if (args.isNotEmpty) {
-                  setState(() {
-                    _currentRoute = args.first.toString();
-                  });
-                  debugPrint("🌐 React reported route: ${args.first}");
-                }
-              },
-            );
+            try {
+              controller.addJavaScriptHandler(
+                handlerName: 'routeChanged',
+                callback: (args) {
+                  if (args.isNotEmpty) {
+                    if (!mounted) return;
+                    setState(() {
+                      _currentRoute = args.first.toString();
+                    });
+                    debugPrint("🌐 React reported route: ${args.first}");
+                  }
+                },
+              );
+            } catch (e, stack) {
+              debugPrint("JS handler registration failed: $e\n$stack");
+            }
           },
           onLoadStart: (controller, url) {
             debugPrint("🔄 PAGE LOAD START");
             _isPageLoaded = false;
             setState(() { _showLoading = true; _hasError = false; });
+            _startPageLoadTimeout();
           },
           onLoadStop: (controller, url) async {
-             debugPrint("✅ PAGE LOAD STOP");
-             _isPageLoaded = true;
-             setState(() { _showLoading = false; _hasError = false; });
-             _injectSafeArea();
-             
-             // HARD RESET: Completely clear WebView history to prevent browser-like behavior
-             await controller.clearHistory();
+            debugPrint("✅ PAGE LOAD STOP");
+            try {
+              if (!mounted) return;
 
-             // Sync initial route to Flutter immediately after load
-             await controller.evaluateJavascript(source: """
-               window.flutter_inappwebview.callHandler(
-                 'routeChanged',
-                 window.location.pathname
-               );
-             """);
+              _cancelPageLoadTimeout();
+              if (_didPageLoadTimeout) {
+                // WebView finished "loading" an error page after our timeout fired.
+                // Keep showing the Flutter overlay instead of clearing it.
+                setState(() {
+                  _hasError = true;
+                  _showLoading = false;
+                });
+                return;
+              }
+              _isPageLoaded = true;
+              setState(() {
+                _showLoading = false;
+                _hasError = false;
+              });
 
-             // If there was a pending deep link path, navigate now
-             if (_pendingPath != null) {
-               await navigateTo(_pendingPath!);
-               _pendingPath = null;
-             }
-             
-             await controller.evaluateJavascript(source: '''
+              _injectSafeArea();
+
+              // HARD RESET: Completely clear WebView history to prevent browser-like behavior
+              await controller.clearHistory();
+
+              // Sync initial route to Flutter immediately after load
+              await controller.evaluateJavascript(source: """
+                window.flutter_inappwebview.callHandler(
+                  'routeChanged',
+                  window.location.pathname
+                );
+              """);
+
+              // If there was a pending deep link path, navigate now
+              if (_pendingPath != null) {
+                await navigateTo(_pendingPath!);
+                _pendingPath = null;
+              }
+
+              await controller.evaluateJavascript(source: '''
                 var style = document.createElement('style');
                 style.innerHTML = `
                   ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
                   * { scrollbar-width: none !important; -webkit-tap-highlight-color: transparent !important; }
                 `;
                 document.head.appendChild(style);
-             ''');
+              ''');
+            } catch (e, stack) {
+              debugPrint("onLoadStop failed: $e\n$stack");
+              if (!mounted) return;
+              setState(() {
+                _hasError = true;
+                _showLoading = false;
+              });
+            }
           },
           onReceivedError: (controller, request, error) {
-            // Only surface main frame errors to avoid noise from sub-resource failures
-            if (request.isForMainFrame ?? false) {
-              final desc = error.description;
+            _cancelPageLoadTimeout();
+
+            // Only surface main frame errors to avoid noise from sub-resource failures.
+            // Also treat timeouts as connection errors so we can hide the WebView default error page.
+            final desc = error.description;
+            final normalized = desc.toLowerCase();
+            final isTimedOut = normalized.contains('timed out') ||
+                normalized.contains('err_timed_out') ||
+                normalized.contains('timeout');
+            final isMainFrame = request.isForMainFrame ?? false;
+
+            if (isMainFrame || isTimedOut) {
               debugPrint("❌ WebView load error: $desc (url: ${request.url})");
-              setState(() { _hasError = true; _showLoading = false; _errorDescription = desc; });
+              setState(() {
+                _hasError = true;
+                _showLoading = false;
+                if (isTimedOut) _didPageLoadTimeout = true;
+              });
             }
           },
           shouldOverrideUrlLoading: (controller, navigationAction) async {
             final uri = navigationAction.request.url;
             if (uri == null) return NavigationActionPolicy.CANCEL;
-            const allowedHost = "zen-react-launch.lovable.app";
+            // Allow only the current WebView host (remove legacy URL allowlist).
+            const allowedHost = "quickstart-bliss.lovable.app";
             if (uri.host == allowedHost) return NavigationActionPolicy.ALLOW;
             return NavigationActionPolicy.CANCEL;
           },
@@ -339,7 +423,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               _injectSafeArea();
               debugPrint("✅ WebView recovered after render crash");
             } catch (e, stack) {
-              debugPrint("❌ Recovery failed after RenderProcessGone: $e");
+              debugPrint("❎ Recovery failed after RenderProcessGone: $e");
               debugPrint("📋 Stack trace: $stack");
             }
           },
@@ -382,7 +466,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                               value: null, // indeterminate
                               minHeight: 4,
                               borderRadius: BorderRadius.circular(8),
-                              backgroundColor: const Color(0xFFD4B8D8).withOpacity(0.4),
+                              backgroundColor: Color(0xFFD4B8D8).withValues(alpha: 0.4),
                               valueColor: const AlwaysStoppedAnimation<Color>(
                                 Color(0xFFB57BBA),
                               ),
@@ -406,7 +490,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(32),
-                      border: Border.all(color: Colors.white.withOpacity(0.8), width: 2),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.8), width: 2),
                       gradient: const LinearGradient(
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
@@ -418,12 +502,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
+                          color: Colors.black.withValues(alpha: 0.1),
                           blurRadius: 30,
                           offset: const Offset(0, 10),
                         ),
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.05),
+                          color: Colors.black.withValues(alpha: 0.05),
                           blurRadius: 10,
                           offset: const Offset(0, 4),
                         ),
@@ -461,54 +545,78 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 32),
-                            GestureDetector(
-                              onTapDown: (_) => setState(() => _isRetryPressed = true),
-                              onTapUp: (_) {
-                                setState(() => _isRetryPressed = false);
-                                setState(() {
-                                  _hasError = false;
-                                  _showLoading = true;
-                                });
-                                _controller?.reload();
-                              },
-                              onTapCancel: () => setState(() => _isRetryPressed = false),
-                              child: AnimatedScale(
-                                scale: _isRetryPressed ? 0.95 : 1.0,
-                                duration: const Duration(milliseconds: 100),
-                                curve: Curves.easeInOut,
-                                child: AnimatedOpacity(
-                                  opacity: _isRetryPressed ? 0.8 : 1.0,
-                                  duration: const Duration(milliseconds: 100),
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(30),
-                                      border: Border.all(color: Colors.white, width: 1.5),
-                                      gradient: const LinearGradient(
-                                        begin: Alignment.centerLeft,
-                                        end: Alignment.centerRight,
-                                        colors: [Color(0xFFFF7EB3), Color(0xFF8FD3F4)],
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withOpacity(0.1),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 4),
+                            Material(
+                              color: Colors.transparent,
+                              borderRadius: BorderRadius.circular(30),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(30),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(30),
+                                  splashColor: Colors.white.withValues(alpha: 0.16),
+                                  highlightColor: Colors.white.withValues(alpha: 0.08),
+                                  onTapDown: (_) {
+                                    if (!mounted) return;
+                                    setState(() => _isRetryPressed = true);
+                                  },
+                                  onTapCancel: () {
+                                    if (!mounted) return;
+                                    setState(() => _isRetryPressed = false);
+                                  },
+                                  onTapUp: (_) {
+                                    if (!mounted) return;
+                                    setState(() => _isRetryPressed = false);
+                                  },
+                                  onTap: () async {
+                                    if (!mounted) return;
+                                    setState(() => _isRetryPressed = false);
+                                    setState(() {
+                                      _hasError = false;
+                                      _showLoading = true;
+                                    });
+                                    await _controller?.reload();
+                                  },
+                                  child: AnimatedScale(
+                                    scale: _isRetryPressed ? 0.88 : 1.0,
+                                    duration: const Duration(milliseconds: 20),
+                                    curve: Curves.easeInOut,
+                                    child: AnimatedOpacity(
+                                      opacity: _isRetryPressed ? 0.72 : 1.0,
+                                      duration: const Duration(milliseconds: 20),
+                                      child: Ink(
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(30),
+                                          border: Border.all(color: Colors.white, width: 1.5),
+                                          gradient: const LinearGradient(
+                                            begin: Alignment.centerLeft,
+                                            end: Alignment.centerRight,
+                                            colors: [
+                                              Color(0xFFFF7EB3),
+                                              Color(0xFF8FD3F4),
+                                            ],
+                                          ),
+                                          boxShadow: [
+                                            BoxShadow(
+                                              color: Colors.black.withValues(alpha: 0.1),
+                                              blurRadius: 8,
+                                              offset: const Offset(0, 4),
+                                            ),
+                                            BoxShadow(
+                                              color: Color(0xFFFF7EB3).withValues(alpha: 0.3),
+                                              blurRadius: 12,
+                                              offset: const Offset(0, 6),
+                                            ),
+                                          ],
                                         ),
-                                        BoxShadow(
-                                          color: const Color(0xFFFF7EB3).withOpacity(0.3),
-                                          blurRadius: 12,
-                                          offset: const Offset(0, 6),
+                                        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
+                                        child: const Text(
+                                          'Retry',
+                                          style: TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 18,
+                                            fontWeight: FontWeight.bold,
+                                            letterSpacing: 1.0,
+                                          ),
                                         ),
-                                      ],
-                                    ),
-                                    padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
-                                    child: const Text(
-                                      'Retry',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                        letterSpacing: 1.0,
                                       ),
                                     ),
                                   ),
@@ -533,7 +641,7 @@ class _StardustPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final random = math.Random(42);
-    final paint = Paint()..color = Colors.white.withOpacity(0.6);
+    final paint = Paint()..color = Colors.white.withValues(alpha: 0.6);
     
     for (int i = 0; i < 40; i++) {
       final x = random.nextDouble() * size.width;
@@ -549,7 +657,7 @@ class _StardustPainter extends CustomPainter {
           ..quadraticBezierTo(x, y, x, y - radius * 4)
           ..close();
         
-        canvas.drawPath(path, Paint()..color = Colors.white.withOpacity(0.9));
+        canvas.drawPath(path, Paint()..color = Colors.white.withValues(alpha: 0.9));
       } else {
         canvas.drawCircle(Offset(x, y), radius, paint);
       }
