@@ -31,15 +31,11 @@
 		<key>UISupportedInterfaceOrientations</key>
 		<array>
 			<string>UIInterfaceOrientationPortrait</string>
-			<string>UIInterfaceOrientationLandscapeLeft</string>
-			<string>UIInterfaceOrientationLandscapeRight</string>
 		</array>
 		<key>UISupportedInterfaceOrientations~ipad</key>
 		<array>
 			<string>UIInterfaceOrientationPortrait</string>
 			<string>UIInterfaceOrientationPortraitUpsideDown</string>
-			<string>UIInterfaceOrientationLandscapeLeft</string>
-			<string>UIInterfaceOrientationLandscapeRight</string>
 		</array>
 		<key>CADisableMinimumFrameDurationOnPhone</key>
 		<true/>
@@ -70,7 +66,7 @@
 		<!-- Lock WKWebView to our domain only (iOS 14+) -->
 		<key>WKAppBoundDomains</key>
 		<array>
-			<string>quickstart-bliss.lovable.app</string>
+			<string>pure-react-start-94.lovable.app</string>
 		</array>
 		<key>CFBundleURLTypes</key>
 		<array>
@@ -87,5 +83,9 @@
 		</array>
 		<key>UIStatusBarHidden</key>
 		<false/>
+		<key>NSLocationWhenInUseUsageDescription</key>
+		<string>ChicSalon needs your location to find nearby salons</string>
+		<key>NSLocationAlwaysUsageDescription</key>
+		<string>ChicSalon needs your location to find nearby salons</string>
 	</dict>
 </plist>

@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:app_links/app_links.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -12,9 +14,17 @@ void main() async {
   // Edge-to-edge system UI
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.dark,
     systemNavigationBarColor: Colors.transparent,
+    systemNavigationBarIconBrightness: Brightness.dark,
+    systemNavigationBarDividerColor: Colors.transparent,
   ));
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  
+  // Lock to portrait mode
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+  ]);
   
   runApp(const ChicSalonApp());
 }
@@ -45,7 +55,7 @@ class WebViewScreen extends StatefulWidget {
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   InAppWebViewController? _controller;
   static const String _rootRoute = "/";
-  static const String _webAppUrl = 'https://quickstart-bliss.lovable.app';
+  static const String _webAppUrl = 'https://pure-react-start-94.lovable.app';
   
   late final AppLinks _appLinks;
   StreamSubscription<Uri>? _linkSubscription;
@@ -186,7 +196,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   Future<void> navigateTo(String path) async {
     if (_controller == null || !mounted) return;
-    
+
     // Guard: Prevent duplicate navigation to the same route
     if (_currentRoute == path) return;
 
@@ -200,6 +210,77 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     } catch (e) {
       debugPrint("Navigation bridge error: $e");
     }
+  }
+
+  Future<void> _handleLocationRequest() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _sendLocationError('Location services are disabled. Please enable GPS.');
+        return;
+      }
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          _sendLocationError('Location permission denied.');
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        _sendLocationError('Location permission permanently denied. Please enable it in Settings.');
+        return;
+      }
+
+      Position position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 15),
+        ),
+      );
+
+      String? cityName;
+      String? areaName;
+      try {
+        List<Placemark> placemarks = await placemarkFromCoordinates(
+          position.latitude,
+          position.longitude,
+        );
+        if (placemarks.isNotEmpty) {
+          final place = placemarks.first;
+          cityName = place.locality ?? place.subAdministrativeArea ?? place.administrativeArea;
+          areaName = place.subLocality ?? place.thoroughfare;
+        }
+      } catch (e) {
+        debugPrint('Geocoding failed: $e');
+      }
+
+      final js = '''
+        if (window.setLocationFromNative) {
+          window.setLocationFromNative({
+            lat: ${position.latitude},
+            lng: ${position.longitude},
+            city: ${cityName != null ? '"$cityName"' : 'null'},
+            area: ${areaName != null ? '"$areaName"' : 'null'}
+          });
+        }
+      ''';
+      await _controller?.evaluateJavascript(source: js);
+    } catch (e) {
+      debugPrint('Location error: $e');
+      _sendLocationError('Failed to get location. Please try again.');
+    }
+  }
+
+  void _sendLocationError(String message) {
+    final js = '''
+      if (window.setLocationError) {
+        window.setLocationError("$message");
+      }
+    ''';
+    _controller?.evaluateJavascript(source: js);
   }
 
   @override
@@ -254,15 +335,26 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
         debugPrint("📱 BACK PRESSED → currentRoute: $_currentRoute");
 
-        // Root check: If at / or empty, exit the app
-        if (_currentRoute == _rootRoute || _currentRoute.isEmpty) {
-          SystemNavigator.pop();
-          return;
+        // Always ask React via window.isRootRoute?.() — if true, exit.
+        // Never use local route checks for exit except as JS-call failure fallback.
+        try {
+          final isRoot = await controller.evaluateJavascript(
+            source: "window.isRootRoute?.()",
+          );
+          if (isRoot == true || isRoot == 'true') {
+            SystemNavigator.pop();
+            return;
+          }
+        } catch (e) {
+          debugPrint("isRootRoute check failed: $e");
+          // JS-call failure fallback — only place local route is used
+          if (_currentRoute == _rootRoute || _currentRoute.isEmpty) {
+            SystemNavigator.pop();
+            return;
+          }
         }
 
-        // Delegate all other back navigation to React via JS bridge.
-        // React's window.appBack() will now handle whether to go back 
-        // to a previous page or jump directly to Home (/) if on a main tab.
+        // Not root — delegate back navigation to React
         try {
           debugPrint("📲 Calling window.appBack()");
           await controller.evaluateJavascript(source: """
@@ -309,6 +401,23 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                     });
                     debugPrint("🌐 React reported route: ${args.first}");
                   }
+                },
+              );
+
+              controller.addJavaScriptHandler(
+                handlerName: 'requestLocation',
+                callback: (args) {
+                  _handleLocationRequest();
+                  return null;
+                },
+              );
+
+              // Map active handler — disable gesture interception when map is displayed
+              controller.addJavaScriptHandler(
+                handlerName: 'mapActive',
+                callback: (args) {
+                  final bool active = args.isNotEmpty && args[0] == true;
+                  debugPrint('Map active: $active');
                 },
               );
             } catch (e, stack) {
@@ -403,7 +512,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             final uri = navigationAction.request.url;
             if (uri == null) return NavigationActionPolicy.CANCEL;
             // Allow only the current WebView host (remove legacy URL allowlist).
-            const allowedHost = "quickstart-bliss.lovable.app";
+            const allowedHost = "pure-react-start-94.lovable.app";
             if (uri.host == allowedHost) return NavigationActionPolicy.ALLOW;
             return NavigationActionPolicy.CANCEL;
           },
