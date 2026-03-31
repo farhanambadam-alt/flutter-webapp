@@ -55,7 +55,7 @@ class WebViewScreen extends StatefulWidget {
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   InAppWebViewController? _controller;
   static const String _rootRoute = "/";
-  static const String _webAppUrl = 'https://pure-react-start-94.lovable.app';
+  static const String _webAppUrl = 'https://start-sparkle-94.lovable.app';
   
   late final AppLinks _appLinks;
   StreamSubscription<Uri>? _linkSubscription;
@@ -286,7 +286,22 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   Future<void> _handleEnableLocationServices() async {
     try {
-      // Opens the Android system location settings dialog
+      // GUARD: If GPS is already ON, notify React immediately — do NOT open settings
+      // This prevents the infinite loop: React calls enableLocationServices → Flutter
+      // opens settings → detects GPS ON → notifies React → React calls again → loop
+      if (await Geolocator.isLocationServiceEnabled()) {
+        debugPrint('GPS already ON — notifying React without opening settings');
+        await _controller?.evaluateJavascript(
+          source: '''
+            if (window.onLocationServicesEnabled) {
+              window.onLocationServicesEnabled();
+            }
+          ''',
+        );
+        return;
+      }
+
+      // GPS is OFF — open the Android system location settings dialog
       bool opened = await Geolocator.openLocationSettings();
 
       if (opened) {
@@ -463,6 +478,30 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                 },
               );
 
+              // Silent location status check — called on every app startup by React
+              // NEVER opens settings, requests permissions, or shows any UI
+              // Returns FAST — no getCurrentPosition (that was causing React timeout)
+              controller.addJavaScriptHandler(
+                handlerName: 'checkLocationStatus',
+                callback: (args) async {
+                  debugPrint('checkLocationStatus called — checking silently');
+                  bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+                  LocationPermission permission = await Geolocator.checkPermission(); // NOT requestPermission!
+                  debugPrint('checkLocationStatus — service: $serviceEnabled, permission: $permission');
+
+                  if (serviceEnabled &&
+                      permission != LocationPermission.denied &&
+                      permission != LocationPermission.deniedForever) {
+                    _controller?.evaluateJavascript(source:
+                      "if (window.setLocationCheckResult) { window.setLocationCheckResult({enabled:true}); }");
+                  } else {
+                    _controller?.evaluateJavascript(source:
+                      "if (window.setLocationCheckResult) { window.setLocationCheckResult({enabled:false}); }");
+                  }
+                  return null;
+                },
+              );
+
               // Map active handler — disable gesture interception when map is displayed
               controller.addJavaScriptHandler(
                 handlerName: 'mapActive',
@@ -563,7 +602,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             final uri = navigationAction.request.url;
             if (uri == null) return NavigationActionPolicy.CANCEL;
             // Allow only the current WebView host (remove legacy URL allowlist).
-            const allowedHost = "pure-react-start-94.lovable.app";
+            const allowedHost = "start-sparkle-94.lovable.app";
             if (uri.host == allowedHost) return NavigationActionPolicy.ALLOW;
             return NavigationActionPolicy.CANCEL;
           },
