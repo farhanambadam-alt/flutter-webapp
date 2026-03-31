@@ -214,12 +214,15 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   Future<void> _handleLocationRequest() async {
     try {
+      // 1. Check if location services are enabled
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _sendLocationError('Location services are disabled. Please enable GPS.');
+        // GPS is OFF — open system settings and notify React
+        await _handleEnableLocationServices();
         return;
       }
 
+      // 2. Check & request permission
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -230,10 +233,13 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       }
 
       if (permission == LocationPermission.deniedForever) {
-        _sendLocationError('Location permission permanently denied. Please enable it in Settings.');
+        _sendLocationError(
+          'Location permission permanently denied. Please enable it in Settings.',
+        );
         return;
       }
 
+      // 3. Get current position with HIGH ACCURACY
       Position position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -241,6 +247,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         ),
       );
 
+      // 4. Reverse geocode (optional — React will also reverse geocode)
       String? cityName;
       String? areaName;
       try {
@@ -250,13 +257,16 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
         );
         if (placemarks.isNotEmpty) {
           final place = placemarks.first;
-          cityName = place.locality ?? place.subAdministrativeArea ?? place.administrativeArea;
+          cityName = place.locality ??
+              place.subAdministrativeArea ??
+              place.administrativeArea;
           areaName = place.subLocality ?? place.thoroughfare;
         }
       } catch (e) {
-        debugPrint('Geocoding failed: $e');
+        debugPrint('Geocoding failed: $e — React will handle it');
       }
 
+      // 5. Send result to React
       final js = '''
         if (window.setLocationFromNative) {
           window.setLocationFromNative({
@@ -271,6 +281,38 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     } catch (e) {
       debugPrint('Location error: $e');
       _sendLocationError('Failed to get location. Please try again.');
+    }
+  }
+
+  Future<void> _handleEnableLocationServices() async {
+    try {
+      // Opens the Android system location settings dialog
+      bool opened = await Geolocator.openLocationSettings();
+
+      if (opened) {
+        // Poll for location services to become enabled (max 30 seconds)
+        for (int i = 0; i < 15; i++) {
+          await Future.delayed(const Duration(seconds: 2));
+          if (await Geolocator.isLocationServiceEnabled()) {
+            // GPS is now ON — notify React to retry
+            await _controller?.evaluateJavascript(
+              source: '''
+                if (window.onLocationServicesEnabled) {
+                  window.onLocationServicesEnabled();
+                }
+              ''',
+            );
+            return;
+          }
+        }
+        // Timed out waiting
+        _sendLocationError('GPS was not enabled. Please try again.');
+      } else {
+        _sendLocationError('Could not open location settings.');
+      }
+    } catch (e) {
+      debugPrint('Enable location error: $e');
+      _sendLocationError('Could not open location settings.');
     }
   }
 
@@ -408,6 +450,15 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                 handlerName: 'requestLocation',
                 callback: (args) {
                   _handleLocationRequest();
+                  return null;
+                },
+              );
+
+              // Enable location services — called when GPS is detected as OFF
+              controller.addJavaScriptHandler(
+                handlerName: 'enableLocationServices',
+                callback: (args) {
+                  _handleEnableLocationServices();
                   return null;
                 },
               );
