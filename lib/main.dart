@@ -286,7 +286,23 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   Future<void> _handleEnableLocationServices() async {
     try {
-      // GUARD: If GPS is already ON, notify React immediately — do NOT open settings
+      // 1. Handle permission first — no point opening GPS settings if permission is denied
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          _sendLocationError('Location permission denied.');
+          return;
+        }
+      }
+      if (permission == LocationPermission.deniedForever) {
+        _sendLocationError(
+          'Location permission permanently denied. Please enable in Settings.',
+        );
+        return;
+      }
+
+      // 2. GUARD: If GPS is already ON, notify React immediately — do NOT open settings
       // This prevents the infinite loop: React calls enableLocationServices → Flutter
       // opens settings → detects GPS ON → notifies React → React calls again → loop
       if (await Geolocator.isLocationServiceEnabled()) {
