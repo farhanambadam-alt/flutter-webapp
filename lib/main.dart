@@ -55,7 +55,7 @@ class WebViewScreen extends StatefulWidget {
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   InAppWebViewController? _controller;
   static const String _rootRoute = "/";
-  static const String _webAppUrl = 'https://start-sparkle-94.lovable.app';
+  static const String _webAppUrl = 'https://chicksalon.lovable.app';
   
   late final AppLinks _appLinks;
   StreamSubscription<Uri>? _linkSubscription;
@@ -120,7 +120,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             _hasError = false;
             _showLoading = true;
           });
-          _controller!.reload();
+          _controller!.loadUrl(urlRequest: URLRequest(url: WebUri(_webAppUrl)));
         }
       }
     }
@@ -618,7 +618,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             final uri = navigationAction.request.url;
             if (uri == null) return NavigationActionPolicy.CANCEL;
             // Allow only the current WebView host (remove legacy URL allowlist).
-            const allowedHost = "start-sparkle-94.lovable.app";
+            const allowedHost = "chicksalon.lovable.app";
             if (uri.host == allowedHost) return NavigationActionPolicy.ALLOW;
             return NavigationActionPolicy.CANCEL;
           },
@@ -788,7 +788,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                                       _hasError = false;
                                       _showLoading = true;
                                     });
-                                    await _controller?.reload();
+                                    await _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(_webAppUrl)));
                                   },
                                   child: AnimatedScale(
                                     scale: _isRetryPressed ? 0.88 : 1.0,
