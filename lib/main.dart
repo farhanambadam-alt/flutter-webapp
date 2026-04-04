@@ -7,6 +7,7 @@ import 'package:app_links/app_links.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -526,6 +527,46 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                   debugPrint('Map active: $active');
                 },
               );
+
+              // ── NEW: Directions handler ──
+              controller.addJavaScriptHandler(
+                handlerName: 'openDirections',
+                callback: (args) async {
+                  debugPrint('[MAP] openDirections received');
+
+                  if (args.isEmpty) {
+                    debugPrint('[MAP] ERROR: No payload received');
+                    return;
+                  }
+
+                  final data = args[0] as Map<String, dynamic>;
+                  final double lat = (data['lat'] as num).toDouble();
+                  final double lng = (data['lng'] as num).toDouble();
+                  final String address = data['address'] as String? ?? '';
+
+                  debugPrint('[MAP] Destination: $lat, $lng ($address)');
+
+                  final nativeUri = Uri.parse('google.navigation:q=$lat,$lng');
+                  debugPrint('[MAP] Trying native maps: $nativeUri');
+
+                  if (await canLaunchUrl(nativeUri)) {
+                    debugPrint('[MAP] Launching native Google Maps');
+                    await launchUrl(nativeUri);
+                    return;
+                  }
+
+                  final browserUri = Uri.parse(
+                    'https://www.google.com/maps/dir/?api=1&destination=$lat,$lng',
+                  );
+                  debugPrint('[MAP] Fallback to browser: $browserUri');
+
+                  if (await canLaunchUrl(browserUri)) {
+                    await launchUrl(browserUri, mode: LaunchMode.externalApplication);
+                  } else {
+                    debugPrint('[MAP] ERROR: Cannot launch any maps URL');
+                  }
+                },
+              );
             } catch (e, stack) {
               debugPrint("JS handler registration failed: $e\n$stack");
             }
@@ -760,78 +801,73 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                               textAlign: TextAlign.center,
                             ),
                             const SizedBox(height: 32),
-                            Material(
-                              color: Colors.transparent,
-                              borderRadius: BorderRadius.circular(30),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(30),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(30),
-                                  splashColor: Colors.white.withValues(alpha: 0.16),
-                                  highlightColor: Colors.white.withValues(alpha: 0.08),
-                                  onTapDown: (_) {
-                                    if (!mounted) return;
-                                    setState(() => _isRetryPressed = true);
-                                  },
-                                  onTapCancel: () {
-                                    if (!mounted) return;
-                                    setState(() => _isRetryPressed = false);
-                                  },
-                                  onTapUp: (_) {
-                                    if (!mounted) return;
-                                    setState(() => _isRetryPressed = false);
-                                  },
-                                  onTap: () async {
-                                    if (!mounted) return;
-                                    setState(() => _isRetryPressed = false);
-                                    setState(() {
-                                      _hasError = false;
-                                      _showLoading = true;
-                                    });
-                                    await _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(_webAppUrl)));
-                                  },
-                                  child: AnimatedScale(
-                                    scale: _isRetryPressed ? 0.88 : 1.0,
-                                    duration: const Duration(milliseconds: 20),
-                                    curve: Curves.easeInOut,
-                                    child: AnimatedOpacity(
-                                      opacity: _isRetryPressed ? 0.72 : 1.0,
-                                      duration: const Duration(milliseconds: 20),
-                                      child: Ink(
-                                        decoration: BoxDecoration(
-                                          borderRadius: BorderRadius.circular(30),
-                                          border: Border.all(color: Colors.white, width: 1.5),
-                                          gradient: const LinearGradient(
-                                            begin: Alignment.centerLeft,
-                                            end: Alignment.centerRight,
-                                            colors: [
-                                              Color(0xFFFF7EB3),
-                                              Color(0xFF8FD3F4),
-                                            ],
-                                          ),
-                                          boxShadow: [
-                                            BoxShadow(
-                                              color: Colors.black.withValues(alpha: 0.1),
-                                              blurRadius: 8,
-                                              offset: const Offset(0, 4),
-                                            ),
-                                            BoxShadow(
-                                              color: Color(0xFFFF7EB3).withValues(alpha: 0.3),
-                                              blurRadius: 12,
-                                              offset: const Offset(0, 6),
-                                            ),
-                                          ],
+                            GestureDetector(
+                              onTapDown: (_) {
+                                if (!mounted) return;
+                                HapticFeedback.lightImpact();
+                                setState(() => _isRetryPressed = true);
+                              },
+                              onTapCancel: () {
+                                if (!mounted) return;
+                                setState(() => _isRetryPressed = false);
+                              },
+                              onTapUp: (_) {
+                                if (!mounted) return;
+                                setState(() => _isRetryPressed = false);
+                              },
+                              onTap: () async {
+                                if (!mounted) return;
+                                // Give the button 150ms so the user can visually see the shrink/grow animation
+                                // before we instantly remove this view and show the loading screen
+                                await Future.delayed(const Duration(milliseconds: 150));
+                                if (!mounted) return;
+
+                                setState(() {
+                                  _hasError = false;
+                                  _showLoading = true;
+                                });
+                                await _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(_webAppUrl)));
+                              },
+                              child: AnimatedScale(
+                                scale: _isRetryPressed ? 0.92 : 1.0,
+                                duration: const Duration(milliseconds: 100),
+                                curve: Curves.easeOutCubic,
+                                child: AnimatedOpacity(
+                                  opacity: _isRetryPressed ? 0.8 : 1.0,
+                                  duration: const Duration(milliseconds: 100),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      borderRadius: BorderRadius.circular(30),
+                                      border: Border.all(color: Colors.white, width: 1.5),
+                                      gradient: const LinearGradient(
+                                        begin: Alignment.centerLeft,
+                                        end: Alignment.centerRight,
+                                        colors: [
+                                          Color(0xFFFF7EB3),
+                                          Color(0xFF8FD3F4),
+                                        ],
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.1),
+                                          blurRadius: 8,
+                                          offset: const Offset(0, 4),
                                         ),
-                                        padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
-                                        child: const Text(
-                                          'Retry',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.bold,
-                                            letterSpacing: 1.0,
-                                          ),
+                                        BoxShadow(
+                                          color: const Color(0xFFFF7EB3).withValues(alpha: 0.3),
+                                          blurRadius: 12,
+                                          offset: const Offset(0, 6),
                                         ),
+                                      ],
+                                    ),
+                                    padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 14),
+                                    child: const Text(
+                                      'Retry',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 1.0,
                                       ),
                                     ),
                                   ),
