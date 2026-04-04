@@ -8,6 +8,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -56,7 +57,7 @@ class WebViewScreen extends StatefulWidget {
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   InAppWebViewController? _controller;
   static const String _rootRoute = "/";
-  static const String _webAppUrl = 'https://chicksalon.lovable.app';
+  static const String _webAppUrl = 'https://groosalon.lovable.app';
   
   late final AppLinks _appLinks;
   StreamSubscription<Uri>? _linkSubscription;
@@ -567,6 +568,23 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                   }
                 },
               );
+
+              // ── NEW: Share handler ──
+              controller.addJavaScriptHandler(
+                handlerName: 'shareContent',
+                callback: (args) {
+                  final data = args.isNotEmpty ? args[0] as Map<String, dynamic> : {};
+                  final title = data['title']?.toString() ?? '';
+                  final text = data['text']?.toString() ?? '';
+                  final url = data['url']?.toString() ?? '';
+                  debugPrint('[SHARE] shareContent received: $title');
+                  debugPrint('[SHARE] Opening native share sheet');
+                  Share.share(
+                    '$text\n$url',
+                    subject: title,
+                  );
+                },
+              );
             } catch (e, stack) {
               debugPrint("JS handler registration failed: $e\n$stack");
             }
@@ -659,7 +677,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             final uri = navigationAction.request.url;
             if (uri == null) return NavigationActionPolicy.CANCEL;
             // Allow only the current WebView host (remove legacy URL allowlist).
-            const allowedHost = "chicksalon.lovable.app";
+            const allowedHost = "groosalon.lovable.app";
             if (uri.host == allowedHost) return NavigationActionPolicy.ALLOW;
             return NavigationActionPolicy.CANCEL;
           },

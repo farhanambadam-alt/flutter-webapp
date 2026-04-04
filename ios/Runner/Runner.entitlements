@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>applinks:chicksalon.lovable.app</string>
+		<string>applinks:groosalon.lovable.app</string>
 	</array>
 </dict>
 </plist>

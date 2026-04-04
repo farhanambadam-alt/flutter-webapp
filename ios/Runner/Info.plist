@@ -66,7 +66,7 @@
 		<!-- Lock WKWebView to our domain only (iOS 14+) -->
 		<key>WKAppBoundDomains</key>
 		<array>
-			<string>chicksalon.lovable.app</string>
+			<string>groosalon.lovable.app</string>
 		</array>
 		<key>CFBundleURLTypes</key>
 		<array>
