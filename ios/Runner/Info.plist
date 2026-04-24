@@ -66,7 +66,7 @@
 		<!-- Lock WKWebView to our domain only (iOS 14+) -->
 		<key>WKAppBoundDomains</key>
 		<array>
-			<string>chibyby.lovable.app</string>
+			<string>kesh1.lovable.app</string>
 		</array>
 		<key>CFBundleURLTypes</key>
 		<array>
@@ -78,6 +78,16 @@
 				<key>CFBundleURLSchemes</key>
 				<array>
 					<string>chicsalon</string>
+				</array>
+			</dict>
+			<dict>
+				<key>CFBundleTypeRole</key>
+				<string>Editor</string>
+				<key>CFBundleURLName</key>
+				<string>com.example.chicSalon.oauth</string>
+				<key>CFBundleURLSchemes</key>
+				<array>
+					<string>com.example.chicsalon</string>
 				</array>
 			</dict>
 		</array>

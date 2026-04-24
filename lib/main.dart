@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +10,11 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
+
+import 'config/auth_config.dart';
+import 'models/mobile_auth_models.dart';
+import 'services/mobile_auth_service.dart';
+import 'services/auth_error_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -57,7 +63,7 @@ class WebViewScreen extends StatefulWidget {
 class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   InAppWebViewController? _controller;
   static const String _rootRoute = "/";
-  static const String _webAppUrl = 'https://chibyby.lovable.app';
+  static const String _webAppUrl = 'https://kesh1.lovable.app';
   
   late final AppLinks _appLinks;
   StreamSubscription<Uri>? _linkSubscription;
@@ -79,10 +85,21 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   late AnimationController _loadingAnimController;
   late Animation<double> _loadingAnimation;
 
+  // ── Native Auth State ─────────────────────────────────────────────────────
+  late final MobileAuthService _authService;
+  bool _isAuthenticated = false;
+  bool _isAuthenticating = false;
+  MobileAuthUser? _currentUser;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+
+    // Initialise auth service and restore session before anything else.
+    _authService = MobileAuthService();
+    _restoreAuthSession();
+
     _initDeepLinks();
     _initConnectivity();
 
@@ -94,6 +111,25 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
       parent: _loadingAnimController,
       curve: Curves.easeInOut,
     );
+  }
+
+  /// Attempts to restore a previously persisted auth session on cold start.
+  Future<void> _restoreAuthSession() async {
+    try {
+      final restored = await _authService.restoreSession();
+      if (!mounted) return;
+      if (restored) {
+        setState(() {
+          _isAuthenticated = true;
+          _currentUser = _authService.user;
+        });
+        debugPrint('🔑 Auth session restored for ${_currentUser?.email}');
+      } else {
+        debugPrint('🔑 No valid auth session to restore');
+      }
+    } catch (e) {
+      debugPrint('🔑 Auth restore error: $e');
+    }
   }
 
   Future<void> _initConnectivity() async {
@@ -182,18 +218,152 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   }
 
   void _handleDeepLink(Uri uri) {
+    debugPrint("Incoming deep link: $uri");
+
+    // ── OAuth callback routing ──────────────────────────────────────────────
+    // If the deep link is an OAuth callback (com.example.chicsalon://login-callback)
+    // route it to the auth service instead of the WebView.
+    if (uri.scheme == AuthConfig.callbackScheme && uri.host == 'login-callback') {
+      debugPrint('🔑 OAuth callback detected — routing to auth service');
+      // Note: flutter_web_auth_2 handles the callback interception internally
+      // via its own activity/session. This branch is a safety net for any
+      // callbacks that arrive through app_links instead (e.g. cold start).
+      return;
+    }
+
+    // ── Standard deep link → WebView navigation ─────────────────────────────
     // Extract path from chicsalon://app/<path> or https://yourdomain.com/<path>
     String path = uri.path;
     if (path.isEmpty) path = "/";
     if (!path.startsWith("/")) path = "/$path";
 
-    debugPrint("Incoming deep link: $uri -> parsed path: $path");
+    debugPrint("Parsed deep link path: $path");
 
     if (_isPageLoaded) {
       navigateTo(path);
     } else {
       _pendingPath = path;
     }
+  }
+
+  // ── Native Auth Handlers ────────────────────────────────────────────────
+
+  /// Handles a native sign-in request from the WebView.
+  ///
+  /// [provider] must be `"google"` or `"apple"`.
+  Future<void> _handleNativeSignIn(String provider) async {
+    if (_isAuthenticating) {
+      debugPrint('🔑 Sign-in already in progress — ignoring');
+      return;
+    }
+
+    setState(() => _isAuthenticating = true);
+    debugPrint('🔑 Starting native $provider sign-in');
+
+    try {
+      final ExchangeResponse response;
+      if (provider == 'apple') {
+        response = await _authService.startAppleSignIn();
+      } else {
+        response = await _authService.startGoogleSignIn();
+      }
+
+      if (!mounted) return;
+
+      if (response.success && response.data != null) {
+        setState(() {
+          _isAuthenticated = true;
+          _currentUser = _authService.user;
+          _isAuthenticating = false;
+        });
+        debugPrint('🔑 Sign-in successful for ${_currentUser?.email}');
+
+        // Bridge session into WebView
+        _injectAuthSessionIntoWebView();
+
+        // Notify React that sign-in completed
+        _controller?.evaluateJavascript(source: '''
+          if (window.onNativeSignInComplete) {
+            window.onNativeSignInComplete({ success: true, provider: "$provider" });
+          }
+        ''');
+      } else {
+        setState(() => _isAuthenticating = false);
+
+        final errorMsg = AuthErrorHandler.userMessage(response.error);
+        final shouldRestart = AuthErrorHandler.shouldRestartFlow(response.error);
+        debugPrint('🔑 Sign-in failed: ${response.error}');
+
+        // Notify React of the error
+        final escapedMsg = errorMsg.replaceAll('"', '\\"');
+        _controller?.evaluateJavascript(source: '''
+          if (window.onNativeSignInComplete) {
+            window.onNativeSignInComplete({
+              success: false,
+              provider: "$provider",
+              error: "$escapedMsg",
+              shouldRestart: $shouldRestart
+            });
+          }
+        ''');
+      }
+    } catch (e) {
+      debugPrint('🔑 Sign-in exception: $e');
+      if (!mounted) return;
+      setState(() => _isAuthenticating = false);
+
+      _controller?.evaluateJavascript(source: '''
+        if (window.onNativeSignInComplete) {
+          window.onNativeSignInComplete({
+            success: false,
+            provider: "$provider",
+            error: "An unexpected error occurred. Please try again.",
+            shouldRestart: true
+          });
+        }
+      ''');
+    }
+  }
+
+  /// Handles a sign-out request from the WebView.
+  Future<void> _handleNativeSignOut() async {
+    debugPrint('🔑 Signing out');
+    await _authService.signOut();
+    if (!mounted) return;
+    setState(() {
+      _isAuthenticated = false;
+      _currentUser = null;
+    });
+
+    // Notify React that sign-out completed
+    _controller?.evaluateJavascript(source: '''
+      if (window.onNativeSignOutComplete) {
+        window.onNativeSignOutComplete();
+      }
+    ''');
+  }
+
+  /// Injects the current auth session into the WebView so React can consume
+  /// the already-authenticated state without initiating OAuth itself.
+  void _injectAuthSessionIntoWebView() {
+    final session = _authService.session;
+    final user = _authService.user;
+    if (session == null || user == null) return;
+
+    final payload = jsonEncode({
+      'accessToken': session.accessToken,
+      'refreshToken': session.refreshToken,
+      'expiresAt': session.expiresAt,
+      'tokenType': session.tokenType,
+      'user': user.toJson(),
+    });
+
+    debugPrint('🔑 Injecting auth session into WebView');
+    _controller?.evaluateJavascript(source: '''
+      if (window.setAuthSession) {
+        window.setAuthSession($payload);
+      }
+    ''');
   }
 
   Future<void> navigateTo(String path) async {
@@ -585,6 +755,50 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                   );
                 },
               );
+              // ── Native Auth: Sign-in handler ──
+              // React calls this to trigger native Google or Apple sign-in.
+              // Payload: { provider: "google" | "apple" }
+              controller.addJavaScriptHandler(
+                handlerName: 'requestNativeSignIn',
+                callback: (args) {
+                  final data = args.isNotEmpty ? args[0] as Map<String, dynamic> : {};
+                  final provider = data['provider']?.toString() ?? 'google';
+                  debugPrint('[AUTH] requestNativeSignIn: $provider');
+                  _handleNativeSignIn(provider);
+                  return null;
+                },
+              );
+
+              // ── Native Auth: Sign-out handler ──
+              controller.addJavaScriptHandler(
+                handlerName: 'requestNativeSignOut',
+                callback: (args) {
+                  debugPrint('[AUTH] requestNativeSignOut');
+                  _handleNativeSignOut();
+                  return null;
+                },
+              );
+
+              // ── Native Auth: Query current auth state ──
+              // React can call this to check if Flutter has a valid session.
+              controller.addJavaScriptHandler(
+                handlerName: 'getAuthState',
+                callback: (args) {
+                  debugPrint('[AUTH] getAuthState — authenticated=$_isAuthenticated');
+                  final user = _currentUser;
+                  final session = _authService.session;
+                  return {
+                    'isAuthenticated': _isAuthenticated,
+                    'user': user != null ? {
+                      'id': user.id,
+                      'email': user.email,
+                      'provider': user.provider,
+                    } : null,
+                    'accessToken': session?.accessToken,
+                    'expiresAt': session?.expiresAt,
+                  };
+                },
+              );
             } catch (e, stack) {
               debugPrint("JS handler registration failed: $e\n$stack");
             }
@@ -617,6 +831,12 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               });
 
               _injectSafeArea();
+
+              // Bridge authenticated session into WebView on every page load.
+              // Flutter is the source of truth for auth — React consumes it.
+              if (_isAuthenticated) {
+                _injectAuthSessionIntoWebView();
+              }
 
               // HARD RESET: Completely clear WebView history to prevent browser-like behavior
               await controller.clearHistory();
@@ -677,7 +897,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
             final uri = navigationAction.request.url;
             if (uri == null) return NavigationActionPolicy.CANCEL;
             // Allow only the current WebView host (remove legacy URL allowlist).
-            const allowedHost = "chibyby.lovable.app";
+            const allowedHost = "kesh1.lovable.app";
             if (uri.host == allowedHost) return NavigationActionPolicy.ALLOW;
             return NavigationActionPolicy.CANCEL;
           },

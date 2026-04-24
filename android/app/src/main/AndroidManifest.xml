@@ -40,12 +40,20 @@
                 <data android:scheme="chicsalon" android:host="app" />
             </intent-filter>
 
-            <!-- HTTPS: https://chibyby.lovable.app/<route> -->
+            <!-- HTTPS: https://kesh1.lovable.app/<route> -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="chibyby.lovable.app" />
+                <data android:scheme="https" android:host="kesh1.lovable.app" />
+            </intent-filter>
+
+            <!-- OAuth callback: com.example.chicsalon://login-callback -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.example.chicsalon" android:host="login-callback" />
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
