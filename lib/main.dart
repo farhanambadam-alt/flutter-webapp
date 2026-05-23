@@ -11,13 +11,20 @@ import 'package:geocoding/geocoding.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:share_plus/share_plus.dart';
 
+import 'package:supabase_flutter/supabase_flutter.dart';
+
 import 'config/auth_config.dart';
-import 'models/mobile_auth_models.dart';
-import 'services/mobile_auth_service.dart';
+import 'services/native_auth_service.dart';
 import 'services/auth_error_handler.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Supabase (must complete before runApp)
+  await Supabase.initialize(
+    url: AuthConfig.supabaseUrl,
+    anonKey: AuthConfig.supabaseAnonKey,
+  );
   
   // Edge-to-edge system UI
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
@@ -86,19 +93,18 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   late Animation<double> _loadingAnimation;
 
   // ── Native Auth State ─────────────────────────────────────────────────────
-  late final MobileAuthService _authService;
+  late final NativeAuthService _authService;
   bool _isAuthenticated = false;
-  bool _isAuthenticating = false;
-  MobileAuthUser? _currentUser;
+  StreamSubscription<AuthState>? _authSubscription;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
 
-    // Initialise auth service and restore session before anything else.
-    _authService = MobileAuthService();
-    _restoreAuthSession();
+    // Initialise auth service and listen for auth state changes.
+    _authService = NativeAuthService();
+    _listenToAuthState();
 
     _initDeepLinks();
     _initConnectivity();
@@ -113,23 +119,53 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     );
   }
 
-  /// Attempts to restore a previously persisted auth session on cold start.
-  Future<void> _restoreAuthSession() async {
-    try {
-      final restored = await _authService.restoreSession();
-      if (!mounted) return;
-      if (restored) {
-        setState(() {
-          _isAuthenticated = true;
-          _currentUser = _authService.user;
-        });
-        debugPrint('🔑 Auth session restored for ${_currentUser?.email}');
-      } else {
-        debugPrint('🔑 No valid auth session to restore');
+  /// Subscribes to Supabase auth state changes.
+  ///
+  /// Handles: initial session restore (cold start), sign-in, sign-out,
+  /// and token refresh — injecting the session into the WebView each time.
+  void _listenToAuthState() {
+    _authSubscription = _authService.onAuthStateChange.listen((authState) {
+      final event = authState.event;
+      final session = authState.session;
+
+      debugPrint('🔑 Auth state changed: $event');
+
+      if (event == AuthChangeEvent.signedIn ||
+          event == AuthChangeEvent.tokenRefreshed ||
+          event == AuthChangeEvent.initialSession) {
+        if (session != null && mounted) {
+          setState(() => _isAuthenticated = true);
+          debugPrint('🔑 User signed in: ${session.user.email}');
+
+          // Inject session into WebView if it's loaded
+          if (_isPageLoaded && _controller != null) {
+            _injectAuthSessionIntoWebView();
+
+            // Notify React that sign-in completed
+            _controller?.evaluateJavascript(source: '''
+              if (window.onNativeSignInComplete) {
+                window.onNativeSignInComplete({ status: 'success' });
+              }
+            ''');
+          }
+        }
+      } else if (event == AuthChangeEvent.signedOut) {
+        if (mounted) {
+          setState(() => _isAuthenticated = false);
+          debugPrint('🔑 User signed out');
+
+          // Notify React
+          if (_isPageLoaded && _controller != null) {
+            _controller?.evaluateJavascript(source: '''
+              window.dispatchEvent(new Event('native-signed-out'));
+              if (window.onNativeSignOutComplete) {
+                window.onNativeSignOutComplete();
+              }
+            ''');
+          }
+        }
       }
-    } catch (e) {
-      debugPrint('🔑 Auth restore error: $e');
-    }
+    });
   }
 
   Future<void> _initConnectivity() async {
@@ -167,6 +203,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _authSubscription?.cancel();
     _linkSubscription?.cancel();
     _connectivitySubscription?.cancel();
     _cancelPageLoadTimeout();
@@ -221,7 +258,7 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
     debugPrint("Incoming deep link: $uri");
 
     // ── OAuth callback routing ──────────────────────────────────────────────
-    // If the deep link is an OAuth callback (com.example.chicsalon://login-callback)
+    // If the deep link is an OAuth callback (com.keshzo.app://login-callback)
     // route it to the auth service instead of the WebView.
     if (uri.scheme == AuthConfig.callbackScheme && uri.host == 'login-callback') {
       debugPrint('🔑 OAuth callback detected — routing to auth service');
@@ -250,75 +287,26 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
 
   /// Handles a native sign-in request from the WebView.
   ///
-  /// [provider] must be `"google"` or `"apple"`.
-  Future<void> _handleNativeSignIn(String provider) async {
-    if (_isAuthenticating) {
-      debugPrint('🔑 Sign-in already in progress — ignoring');
-      return;
-    }
-
-    setState(() => _isAuthenticating = true);
-    debugPrint('🔑 Starting native $provider sign-in');
+  /// Opens Chrome Custom Tabs / SFSafariViewController for Google OAuth.
+  /// The session arrives asynchronously via [_listenToAuthState].
+  Future<void> _handleNativeSignIn() async {
+    debugPrint('🔑 Starting native Google sign-in');
 
     try {
-      final ExchangeResponse response;
-      if (provider == 'apple') {
-        response = await _authService.startAppleSignIn();
-      } else {
-        response = await _authService.startGoogleSignIn();
-      }
-
-      if (!mounted) return;
-
-      if (response.success && response.data != null) {
-        setState(() {
-          _isAuthenticated = true;
-          _currentUser = _authService.user;
-          _isAuthenticating = false;
-        });
-        debugPrint('🔑 Sign-in successful for ${_currentUser?.email}');
-
-        // Bridge session into WebView
-        _injectAuthSessionIntoWebView();
-
-        // Notify React that sign-in completed
-        _controller?.evaluateJavascript(source: '''
-          if (window.onNativeSignInComplete) {
-            window.onNativeSignInComplete({ success: true, provider: "$provider" });
-          }
-        ''');
-      } else {
-        setState(() => _isAuthenticating = false);
-
-        final errorMsg = AuthErrorHandler.userMessage(response.error);
-        final shouldRestart = AuthErrorHandler.shouldRestartFlow(response.error);
-        debugPrint('🔑 Sign-in failed: ${response.error}');
-
-        // Notify React of the error
-        final escapedMsg = errorMsg.replaceAll('"', '\\"');
-        _controller?.evaluateJavascript(source: '''
-          if (window.onNativeSignInComplete) {
-            window.onNativeSignInComplete({
-              success: false,
-              provider: "$provider",
-              error: "$escapedMsg",
-              shouldRestart: $shouldRestart
-            });
-          }
-        ''');
-      }
+      await _authService.performNativeGoogleLogin();
+      // Session will arrive via onAuthStateChange → _listenToAuthState
+      // which calls _injectAuthSessionIntoWebView automatically.
     } catch (e) {
-      debugPrint('🔑 Sign-in exception: $e');
+      debugPrint('🔑 Sign-in error: $e');
       if (!mounted) return;
-      setState(() => _isAuthenticating = false);
 
+      final message = AuthErrorHandler.userMessage(e);
+      final escapedMsg = message.replaceAll('"', '\\"');
       _controller?.evaluateJavascript(source: '''
         if (window.onNativeSignInComplete) {
           window.onNativeSignInComplete({
-            success: false,
-            provider: "$provider",
-            error: "An unexpected error occurred. Please try again.",
-            shouldRestart: true
+            status: 'error',
+            message: "$escapedMsg"
           });
         }
       ''');
@@ -328,42 +316,39 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
   /// Handles a sign-out request from the WebView.
   Future<void> _handleNativeSignOut() async {
     debugPrint('🔑 Signing out');
-    await _authService.signOut();
-    if (!mounted) return;
-    setState(() {
-      _isAuthenticated = false;
-      _currentUser = null;
-    });
-
-    // Notify React that sign-out completed
-    _controller?.evaluateJavascript(source: '''
-      if (window.onNativeSignOutComplete) {
-        window.onNativeSignOutComplete();
-      }
-    ''');
+    try {
+      await _authService.performNativeSignOut();
+      // onAuthStateChange will fire SIGNED_OUT → _listenToAuthState notifies React.
+    } catch (e) {
+      debugPrint('🔑 Sign-out error: $e');
+    }
   }
 
-  /// Injects the current auth session into the WebView so React can consume
-  /// the already-authenticated state without initiating OAuth itself.
+  /// Injects the current Supabase session into the WebView so React can
+  /// establish the user's login state without initiating OAuth itself.
+  ///
+  /// Passes an object (not a JSON string) matching `supabase.auth.setSession()`
+  /// to avoid double-encoding bugs.
   void _injectAuthSessionIntoWebView() {
-    final session = _authService.session;
-    final user = _authService.user;
-    if (session == null || user == null) return;
-
-    final payload = jsonEncode({
-      'accessToken': session.accessToken,
-      'refreshToken': session.refreshToken,
-      'expiresAt': session.expiresAt,
-      'tokenType': session.tokenType,
-      'user': user.toJson(),
-    });
+    final session = Supabase.instance.client.auth.currentSession;
+    if (session == null || _controller == null) return;
 
     debugPrint('🔑 Injecting auth session into WebView');
-    _controller?.evaluateJavascript(source: '''
-      if (window.setAuthSession) {
-        window.setAuthSession($payload);
+    _controller!.evaluateJavascript(source: '''
+      if (window.setSupabaseSession) {
+        window.setSupabaseSession({
+          access_token: ${jsonEncode(session.accessToken)},
+          refresh_token: ${jsonEncode(session.refreshToken)}
+        });
+      } else if (window.setAuthSession) {
+        window.setAuthSession({
+          access_token: ${jsonEncode(session.accessToken)},
+          refresh_token: ${jsonEncode(session.refreshToken)}
+        });
       }
-    ''');
+    ''').catchError((Object e) {
+      debugPrint('🔑 Session injection failed: $e');
+    });
   }
 
   Future<void> navigateTo(String path) async {
@@ -755,25 +740,23 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
                   );
                 },
               );
-              // ── Native Auth: Sign-in handler ──
-              // React calls this to trigger native Google or Apple sign-in.
-              // Payload: { provider: "google" | "apple" }
+              // ── Native Auth: Sign-in handler (Bridge) ──
+              // React calls triggerNativeLogin → Flutter opens Chrome Custom
+              // Tabs via PKCE. Session arrives via onAuthStateChange.
               controller.addJavaScriptHandler(
-                handlerName: 'requestNativeSignIn',
+                handlerName: 'triggerNativeLogin',
                 callback: (args) {
-                  final data = args.isNotEmpty ? args[0] as Map<String, dynamic> : {};
-                  final provider = data['provider']?.toString() ?? 'google';
-                  debugPrint('[AUTH] requestNativeSignIn: $provider');
-                  _handleNativeSignIn(provider);
+                  debugPrint('[AUTH] triggerNativeLogin');
+                  _handleNativeSignIn();
                   return null;
                 },
               );
 
-              // ── Native Auth: Sign-out handler ──
+              // ── Native Auth: Sign-out handler (Bridge) ──
               controller.addJavaScriptHandler(
-                handlerName: 'requestNativeSignOut',
+                handlerName: 'signOutNative',
                 callback: (args) {
-                  debugPrint('[AUTH] requestNativeSignOut');
+                  debugPrint('[AUTH] signOutNative');
                   _handleNativeSignOut();
                   return null;
                 },
@@ -784,15 +767,15 @@ class _WebViewScreenState extends State<WebViewScreen> with WidgetsBindingObserv
               controller.addJavaScriptHandler(
                 handlerName: 'getAuthState',
                 callback: (args) {
-                  debugPrint('[AUTH] getAuthState — authenticated=$_isAuthenticated');
-                  final user = _currentUser;
-                  final session = _authService.session;
+                  final user = Supabase.instance.client.auth.currentUser;
+                  final session = Supabase.instance.client.auth.currentSession;
+                  debugPrint('[AUTH] getAuthState — authenticated=${session != null}');
                   return {
-                    'isAuthenticated': _isAuthenticated,
+                    'isAuthenticated': session != null,
                     'user': user != null ? {
                       'id': user.id,
-                      'email': user.email,
-                      'provider': user.provider,
+                      'email': user.email ?? '',
+                      'provider': user.appMetadata['provider'] ?? '',
                     } : null,
                     'accessToken': session?.accessToken,
                     'expiresAt': session?.expiresAt,

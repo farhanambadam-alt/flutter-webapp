@@ -2,16 +2,17 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import '../models/mobile_auth_models.dart';
-
-/// Wraps [FlutterSecureStorage] to persist and restore the Supabase auth
-/// session produced by the native OAuth handshake.
+/// Wraps [FlutterSecureStorage] to persist and restore supplementary
+/// auth data (e.g. custom metadata or refresh tokens).
+///
+/// Note: Primary session persistence is handled by `supabase_flutter` itself.
+/// This class is kept for secure storage of any auxiliary data the app may
+/// need (e.g. device tokens, push notification state, etc.).
 class SecureSessionStorage {
   static const _keyAccessToken = 'auth_access_token';
   static const _keyRefreshToken = 'auth_refresh_token';
   static const _keyExpiresAt = 'auth_expires_at';
   static const _keyUserJson = 'auth_user_json';
-  static const _keySessionJson = 'auth_session_json';
 
   final FlutterSecureStorage _storage;
 
@@ -26,55 +27,25 @@ class SecureSessionStorage {
 
   // ── Save ──────────────────────────────────────────────────────────────────
 
-  /// Persists the [session] and [user] into encrypted storage.
-  Future<void> saveSession(
-    MobileAuthSession session,
-    MobileAuthUser user,
-  ) async {
+  /// Persists auth tokens into encrypted storage.
+  Future<void> saveTokens({
+    required String accessToken,
+    required String refreshToken,
+    required int expiresAt,
+    Map<String, dynamic>? userJson,
+  }) async {
     try {
       await Future.wait([
-        _storage.write(key: _keyAccessToken, value: session.accessToken),
-        _storage.write(key: _keyRefreshToken, value: session.refreshToken),
-        _storage.write(
-            key: _keyExpiresAt, value: session.expiresAt.toString()),
-        _storage.write(
-            key: _keySessionJson, value: jsonEncode(session.toJson())),
-        _storage.write(key: _keyUserJson, value: jsonEncode(user.toJson())),
+        _storage.write(key: _keyAccessToken, value: accessToken),
+        _storage.write(key: _keyRefreshToken, value: refreshToken),
+        _storage.write(key: _keyExpiresAt, value: expiresAt.toString()),
+        if (userJson != null)
+          _storage.write(key: _keyUserJson, value: jsonEncode(userJson)),
       ]);
-      debugPrint('[SecureSessionStorage] Session saved successfully');
+      debugPrint('[SecureSessionStorage] Tokens saved successfully');
     } catch (e, stack) {
       debugPrint('[SecureSessionStorage] Save failed: $e\n$stack');
       rethrow;
-    }
-  }
-
-  // ── Restore ───────────────────────────────────────────────────────────────
-
-  /// Attempts to restore a previously persisted session.
-  ///
-  /// Returns `null` if nothing is stored or if the data is corrupt.
-  Future<({MobileAuthSession session, MobileAuthUser user})?> restoreSession() async {
-    try {
-      final sessionJson = await _storage.read(key: _keySessionJson);
-      final userJson = await _storage.read(key: _keyUserJson);
-
-      if (sessionJson == null || userJson == null) {
-        debugPrint('[SecureSessionStorage] No stored session found');
-        return null;
-      }
-
-      final session = MobileAuthSession.fromJson(
-        jsonDecode(sessionJson) as Map<String, dynamic>,
-      );
-      final user = MobileAuthUser.fromJson(
-        jsonDecode(userJson) as Map<String, dynamic>,
-      );
-
-      debugPrint('[SecureSessionStorage] Session restored for ${user.email}');
-      return (session: session, user: user);
-    } catch (e, stack) {
-      debugPrint('[SecureSessionStorage] Restore failed: $e\n$stack');
-      return null;
     }
   }
 
@@ -107,7 +78,6 @@ class SecureSessionStorage {
         _storage.delete(key: _keyAccessToken),
         _storage.delete(key: _keyRefreshToken),
         _storage.delete(key: _keyExpiresAt),
-        _storage.delete(key: _keySessionJson),
         _storage.delete(key: _keyUserJson),
       ]);
       debugPrint('[SecureSessionStorage] Session cleared');

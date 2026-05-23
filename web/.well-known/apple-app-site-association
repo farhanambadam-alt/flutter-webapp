@@ -1,0 +1,11 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "ADD_TEAM_ID_HERE.com.keshzo.app",
+        "paths": ["/auth/callback", "/login-callback"]
+      }
+    ]
+  }
+}

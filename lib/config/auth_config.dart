@@ -1,21 +1,19 @@
-/// Central configuration for the native OAuth handshake.
-///
-/// Replace [supabaseAnonKey] with your real Supabase anon key before testing.
+/// Central configuration for the Supabase native auth bridge.
 class AuthConfig {
   AuthConfig._();
 
-  /// Supabase Edge Function endpoint for mobile OAuth handshake.
-  static const String edgeFunctionUrl =
-      'https://pcilcojzvipbfagofriq.supabase.co/functions/v1/mobile-auth-handshake';
+  /// Supabase project URL.
+  static const String supabaseUrl =
+      'https://pcilcojzvipbfagofriq.supabase.co';
 
   /// Supabase anonymous / public key.
-  /// ⚠️  Replace this placeholder with your real anon key.
-  static const String supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
+  static const String supabaseAnonKey =
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBjaWxjb2p6dmlwYmZhZ29mcmlxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNTA3MzQsImV4cCI6MjA5MjYyNjczNH0.U7yKZu3jD1bb3zSBC-NWchX02BiSJiDCqMgerCRNHno';
 
-  /// The custom-scheme redirect URI registered in Supabase dashboard.
-  static const String redirectUri = 'com.example.chicsalon://login-callback';
+  /// The custom-scheme redirect URI registered in Supabase Dashboard.
+  static const String redirectUri = 'com.keshzo.app://login-callback';
 
-  /// Just the scheme portion (no "://") — used by flutter_web_auth_2 to detect
-  /// the callback.
-  static const String callbackScheme = 'com.example.chicsalon';
+  /// Just the scheme portion (no "://") — used to detect auth callbacks
+  /// in the deep link handler.
+  static const String callbackScheme = 'com.keshzo.app';
 }

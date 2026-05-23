@@ -1,4 +1,4 @@
-package com.example.chic_salon
+package com.keshzo.app
 
 import io.flutter.embedding.android.FlutterActivity
 

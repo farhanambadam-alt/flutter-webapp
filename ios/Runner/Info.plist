@@ -74,20 +74,10 @@
 				<key>CFBundleTypeRole</key>
 				<string>Editor</string>
 				<key>CFBundleURLName</key>
-				<string>chicsalon</string>
+				<string>com.keshzo.app.oauth</string>
 				<key>CFBundleURLSchemes</key>
 				<array>
-					<string>chicsalon</string>
-				</array>
-			</dict>
-			<dict>
-				<key>CFBundleTypeRole</key>
-				<string>Editor</string>
-				<key>CFBundleURLName</key>
-				<string>com.example.chicSalon.oauth</string>
-				<key>CFBundleURLSchemes</key>
-				<array>
-					<string>com.example.chicsalon</string>
+					<string>com.keshzo.app</string>
 				</array>
 			</dict>
 		</array>

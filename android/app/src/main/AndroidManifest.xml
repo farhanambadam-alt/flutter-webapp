@@ -32,14 +32,6 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
 
-            <!-- Custom Scheme: chicsalon://app/<route> -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="chicsalon" android:host="app" />
-            </intent-filter>
-
             <!-- HTTPS: https://kesh1.lovable.app/<route> -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -48,14 +40,16 @@
                 <data android:scheme="https" android:host="kesh1.lovable.app" />
             </intent-filter>
 
-            <!-- OAuth callback: com.example.chicsalon://login-callback -->
+            <!-- OAuth callback: com.keshzo.app://login-callback -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="com.example.chicsalon" android:host="login-callback" />
+                <data android:scheme="com.keshzo.app" android:host="login-callback" />
             </intent-filter>
+
         </activity>
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
@@ -79,7 +73,7 @@
         </intent>
         <intent>
             <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
+            <data android:scheme="com.keshzo.app" />
         </intent>
     </queries>
 </manifest>
